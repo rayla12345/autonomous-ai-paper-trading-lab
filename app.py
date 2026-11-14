@@ -117,25 +117,23 @@ def run_evolution(df, total_capital, count, evolve_every, fee_bps, slippage_bps,
                 "Best agent": parents[0].name,
                 "Best score": round(score(parents[0], price, starting_each), 3)
             })
-            # Each parent's current portfolio is divided between its children,
-            # so evolution never duplicates virtual money.
+            # Preserve the entire virtual portfolio when replacing a generation.
+            # The previous version kept only the selected parents' capital, which
+            # discarded the other agents' portfolios at every evolution cycle.
+            pooled_cash = sum(a.cash for a in agents)
+            pooled_shares = sum(a.shares for a in agents)
+            child_cash = pooled_cash / count
+            child_shares = pooled_shares / count
+            child_peak = max(child_cash + child_shares * price, 1e-9)
+
             children = []
-            for p_idx, p in enumerate(parents):
-                child_count = 2 if len(children) + 2 <= count else 1
-                cash_piece = p.cash / child_count
-                shares_piece = p.shares / child_count
-                peak_piece = max(p.peak / child_count, 1e-9)
-                dd = p.max_drawdown
-                for _ in range(child_count):
-                    child_no = len(children) + 1
-                    children.append(mutate(
-                        p, f"Agent {child_no:02d}", generation,
-                        cash_piece, shares_piece, peak_piece, dd, p.trades, rng
-                    ))
-                    if len(children) == count:
-                        break
-                if len(children) == count:
-                    break
+            for child_idx in range(count):
+                parent = parents[child_idx % len(parents)]
+                children.append(mutate(
+                    parent, f"Agent {child_idx + 1:02d}", generation,
+                    child_cash, child_shares, child_peak, 0.0,
+                    parent.trades, rng
+                ))
             agents = children
 
     final_price = float(prices[-1])
@@ -239,7 +237,7 @@ with st.expander("What does the AI actually do?"):
     - Each agent has a different set of simple trading-rule parameters.
     - Agents test those rules against historical market-price bars.
     - Every selected number of bars, stronger agents are retained and their parameters are mutated to create a new generation.
-    - Virtual cash and shares are divided among offspring; evolution does not create extra money.
+    - The full combined virtual portfolio is redistributed evenly to the next generation; evolution does not create or destroy virtual money.
     - This is evolutionary strategy search, not a human-level AI or a guarantee of learning profitable behavior.
     """)
 
@@ -250,3 +248,4 @@ st.warning(
     "experiment when the app refreshes. No real orders, broker connection, leverage, or real-money "
     "trading are enabled. Historical results do not predict future performance."
 )
+
