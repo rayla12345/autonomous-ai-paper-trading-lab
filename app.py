@@ -4,8 +4,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime
 
 st.set_page_config(page_title="Autonomous AI Paper Trading Lab", page_icon="🧪", layout="wide")
 st.title("🧪 Autonomous AI Paper Trading Lab")
@@ -58,15 +58,23 @@ def score(a, price, starting_cash):
     ret = (a.equity(price) / starting_cash - 1.0) * 100
     return ret - 0.65 * abs(a.max_drawdown)
 
-def mutate(parent, name, generation, cash, shares, peak, drawdown, trades, rng):
+def mutate(parent, name, generation, portfolio_owner, rng):
+    """Copy and mutate strategy parameters while preserving the owner's portfolio."""
     fast = int(np.clip(parent.fast + rng.integers(-2, 3), 3, 20))
     slow = int(np.clip(parent.slow + rng.integers(-4, 5), fast + 5, 60))
     return Agent(
-        name=name, generation=generation, fast=fast, slow=slow,
+        name=name,
+        generation=generation,
+        fast=fast,
+        slow=slow,
         momentum=int(np.clip(parent.momentum + rng.integers(-2, 3), 2, 25)),
         buy_threshold=float(np.clip(parent.buy_threshold + rng.normal(0, 0.002), 0.0005, 0.04)),
         sell_threshold=float(np.clip(parent.sell_threshold + rng.normal(0, 0.002), -0.04, -0.0005)),
-        cash=cash, shares=shares, peak=peak, max_drawdown=drawdown, trades=trades
+        cash=portfolio_owner.cash,
+        shares=portfolio_owner.shares,
+        peak=portfolio_owner.peak,
+        max_drawdown=portfolio_owner.max_drawdown,
+        trades=portfolio_owner.trades
     )
 
 def run_evolution(df, total_capital, count, evolve_every, fee_bps, slippage_bps, seed=2026):
@@ -112,28 +120,30 @@ def run_evolution(df, total_capital, count, evolve_every, fee_bps, slippage_bps,
             ranked = sorted(agents, key=lambda x: score(x, price, starting_each), reverse=True)
             parents = ranked[:max(2, count // 2)]
             generation += 1
-            evolution_log.append({
-                "Date": df.iloc[i]["Date"], "Generation": generation,
-                "Best agent": parents[0].name,
-                "Best score": round(score(parents[0], price, starting_each), 3)
-            })
-            # Preserve the entire virtual portfolio when replacing a generation.
-            # The previous version kept only the selected parents' capital, which
-            # discarded the other agents' portfolios at every evolution cycle.
-            pooled_cash = sum(a.cash for a in agents)
-            pooled_shares = sum(a.shares for a in agents)
-            child_cash = pooled_cash / count
-            child_shares = pooled_shares / count
-            child_peak = max(child_cash + child_shares * price, 1e-9)
 
+            # Each agent keeps its own cash and shares. Better-performing agents
+            # contribute strategy parameters to the next generation; no portfolios
+            # are pooled, split, copied, or transferred between agents.
+            parent_names = []
             children = []
-            for child_idx in range(count):
+            for child_idx, portfolio_owner in enumerate(agents):
                 parent = parents[child_idx % len(parents)]
+                parent_names.append(parent.name)
                 children.append(mutate(
-                    parent, f"Agent {child_idx + 1:02d}", generation,
-                    child_cash, child_shares, child_peak, 0.0,
-                    parent.trades, rng
+                    parent,
+                    portfolio_owner.name,
+                    generation,
+                    portfolio_owner,
+                    rng
                 ))
+
+            evolution_log.append({
+                "Date": df.iloc[i]["Date"],
+                "Generation": generation,
+                "Best agent": parents[0].name,
+                "Best score": round(score(parents[0], price, starting_each), 3),
+                "Unique strategy parents": len(set(parent_names))
+            })
             agents = children
 
     final_price = float(prices[-1])
@@ -234,11 +244,11 @@ else:
 
 with st.expander("What does the AI actually do?"):
     st.markdown("""
-    - Each agent has a different set of simple trading-rule parameters.
+    - Each agent has a separate virtual portfolio and a different set of simple strategy parameters.
     - Agents test those rules against historical market-price bars.
-    - Every selected number of bars, stronger agents are retained and their parameters are mutated to create a new generation.
-    - The full combined virtual portfolio is redistributed evenly to the next generation; evolution does not create or destroy virtual money.
-    - This is evolutionary strategy search, not a human-level AI or a guarantee of learning profitable behavior.
+    - At each evolution cycle, the stronger agents contribute strategy parameters to the next generation through small random mutations.
+    - Every agent keeps its own cash, shares, and performance history; portfolios are never pooled or transferred.
+    - This is evolutionary strategy search, not a human-level AI or a guarantee of profitable behavior.
     """)
 
 st.warning(
